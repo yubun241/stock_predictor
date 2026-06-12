@@ -327,6 +327,18 @@ h2.vt{font-size:17px;font-weight:900;margin:4px 2px 14px}
       <div class="note">お気に入り銘柄の現在値・騰落率・RSI・AI上昇確率を一括計算します。</div>
       <div id="screenout" style="margin-top:8px"></div>
     </div>
+    <div class="card">
+      <div class="chead"><b>上昇候補スキャン</b><span class="sub">(日経225)</span></div>
+      <div class="frow"><span>条件モード</span>
+        <div class="seg2" id="sc-mode">
+          <button data-v="rev" class="on">逆張り(反発候補)</button>
+          <button data-v="mom">順張り(勢い)</button></div></div>
+      <div class="frow"><span>表示件数</span>
+        <input type="number" id="sc-top" value="20" min="5" max="50"></div>
+      <button class="btn" id="sc-run" style="margin-top:12px">日経225をスキャン (約30〜60秒)</button>
+      <div class="note">※「上がる株を当てる」ものではなく、テクニカル条件に合致する候補を抽出・順位付けするツールです(方向的中率は偶然水準と実測済)。最終判断は個別チャートでご確認ください。</div>
+      <div id="sc-out" style="margin-top:8px"></div>
+    </div>
   </div>
 
   <!-- ============ アラート ============ -->
@@ -477,14 +489,15 @@ async function yChart(symbol, interval, range){
   const u = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=${interval}&range=${range}`;
   const j = await getJSON(u);
   const res = j.chart.result[0], q = res.indicators.quote[0];
-  const o=[],h=[],l=[],c=[],ts=[];
+  const o=[],h=[],l=[],c=[],ts=[],v=[];
   for (let i=0;i<res.timestamp.length;i++){
     if (q.open[i]!=null&&q.high[i]!=null&&q.low[i]!=null&&q.close[i]!=null){
       o.push(q.open[i]); h.push(q.high[i]); l.push(q.low[i]); c.push(q.close[i]);
+      v.push(q.volume&&q.volume[i]!=null?q.volume[i]:0);
       ts.push(res.timestamp[i]);
     }
   }
-  return {o,h,l,c,ts, meta:res.meta||{}};
+  return {o,h,l,c,v,ts, meta:res.meta||{}};
 }
 async function yQuote(symbol){
   const j = await getJSON(`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1m&range=1d`);
@@ -1302,6 +1315,88 @@ async function runScreening(){
     switchView('home'); analyze(rw.dataset.s); });
 }
 
+
+/* ---------- 上昇候補スキャン (日経225) ---------- */
+const NIKKEI225 = [
+'1332','1605','1721','1801','1802','1803','1808','1812','1925','1928','1963',
+'2002','2269','2282','2413','2432','2501','2502','2503','2531','2768','2801','2802','2871','2914',
+'3086','3092','3099','3289','3382','3401','3402','3405','3407','3436','3659','3861','3863',
+'4004','4005','4021','4042','4043','4061','4062','4063','4151','4183','4188','4208','4307','4324',
+'4452','4502','4503','4506','4507','4519','4523','4528','4543','4568','4578','4631','4661','4689',
+'4704','4751','4755','4901','4902','4911','5019','5020','5021','5101','5108','5201','5214','5233',
+'5301','5332','5333','5401','5406','5411','5631','5706','5711','5713','5714','5801','5802','5803',
+'6098','6103','6113','6146','6178','6273','6301','6302','6305','6326','6361','6367','6471','6472',
+'6473','6501','6503','6504','6506','6526','6532','6594','6645','6701','6702','6723','6724','6752',
+'6753','6758','6762','6770','6841','6857','6861','6902','6920','6952','6954','6963','6971','6976',
+'6981','6988','7004','7011','7012','7013','7186','7201','7202','7203','7205','7211','7261','7267',
+'7269','7270','7272','7453','7532','7731','7733','7735','7741','7751','7752','7762','7832','7911',
+'7912','7951','7974','8001','8002','8015','8031','8053','8058','8113','8233','8252','8253','8267',
+'8304','8306','8308','8309','8316','8331','8411','8591','8601','8604','8628','8630','8697','8725',
+'8750','8766','8795','8801','8802','8804','8830','9001','9005','9007','9008','9009','9020','9021',
+'9022','9064','9101','9104','9107','9143','9147','9201','9202','9432','9433','9434','9501','9502',
+'9503','9531','9532','9602','9613','9684','9735','9766','9843','9983','9984'
+];
+let scBusy=false;
+async function scanNikkei(){
+  if(scBusy) return; scBusy=true;
+  const mode=document.querySelector('#sc-mode button.on').dataset.v;
+  const topN=Math.max(5,Math.min(50,+$('sc-top').value||20));
+  const out=$('sc-out'), total=NIKKEI225.length;
+  let done=0, fail=0; const rows=[];
+  out.innerHTML='<div class="empty"><span class="spin"></span>スキャン中… 0/'+total+'</div>';
+  const queue=[...NIKKEI225];
+  async function worker(){
+    while(queue.length){
+      const code=queue.shift(), sym=code+'.T';
+      try{
+        const ch=await yChart(sym,'1d','6mo');
+        const c=ch.c, vol=ch.v, n=c.length;
+        if(n<60) throw 0;
+        const r=logRet(c);
+        const rv=rsiArr(c)[n-1];
+        const bb=bollinger(c,20);
+        const bbDev=bb?(c[n-1]-bb.mid[bb.mid.length-1])/Math.max(bb.sd[bb.sd.length-1],1e-9):0;
+        const {line,sig,hist}=macdArr(c);
+        const gx=line[n-1]>sig[n-1], grow=hist[n-1]>hist[n-2];
+        const macdTurn=(gx&&grow)?2:grow?1:0;
+        const v5=mean(vol.slice(-5)), v60=mean(vol.slice(-60));
+        const volR=v60>0?v5/v60:1;
+        const mom20=n>21?c[n-1]/c[n-21]-1:0;
+        const m1=m1Bootstrap(r,3,600), m4=m4Technical(c,20);
+        const pUp=m1?(m1.pUp*0.5+m4.pUp*0.5):m4.pUp;
+        const chg=n>1?(c[n-1]/c[n-2]-1)*100:0;
+        let score;
+        if(mode==='rev')
+          score=Math.max(0,45-rv)*1.2+Math.max(0,-bbDev)*12+macdTurn*8
+               +Math.min(volR,3)*6+(pUp-0.5)*40;
+        else
+          score=mom20*250+(rv>=50&&rv<=70?12:0)+(gx?10:0)
+               +Math.min(volR,3)*8+(pUp-0.5)*40;
+        rows.push({sym,code,score,rsi:rv,bbDev,volR,pUp,price:c[n-1],chg});
+      }catch(e){ fail++; }
+      done++;
+      if(done%5===0||done===total)
+        out.innerHTML='<div class="empty"><span class="spin"></span>スキャン中… '+done+'/'+total+'</div>';
+    }
+  }
+  await Promise.all([worker(),worker(),worker(),worker(),worker(),worker()]);
+  rows.sort((a,b)=>b.score-a.score);
+  const top=rows.slice(0,topN);
+  out.innerHTML=
+    '<div class="sub" style="margin:4px 0 6px">'+(mode==='rev'?'逆張り(反発候補)':'順張り(勢い)')
+    +' / 走査'+rows.length+'銘柄'+(fail?' (取得失敗'+fail+')':'')+'</div>'
+    + top.map((x,i)=>
+    `<div class="lrow" data-s="${x.sym}"><div class="grow">
+      <div class="nm3">${i+1}. ${x.code} <span class="sub mono">score ${x.score.toFixed(0)}</span></div>
+      <div class="cd">RSI ${x.rsi.toFixed(0)} / BB ${x.bbDev>=0?'+':''}${x.bbDev.toFixed(1)}σ / 出来高×${x.volR.toFixed(1)} / P↑${(x.pUp*100).toFixed(0)}%</div></div>
+      <div class="pr"><div class="p1 mono">${fmt(x.price)}</div>
+      <div class="p2 mono ${x.chg>0?'up':x.chg<0?'dn':'neu'}">${(x.chg>=0?'+':'')+x.chg.toFixed(2)}%</div></div></div>`
+    ).join('');
+  out.querySelectorAll('.lrow[data-s]').forEach(rw=>rw.onclick=()=>{
+    switchView('home'); analyze(rw.dataset.s); });
+  scBusy=false;
+}
+
 /* ---------- 初期化 ---------- */
 function init(){
   buildTabs();
@@ -1368,6 +1463,10 @@ function init(){
       try{ await Notification.requestPermission(); }catch(e){} };
   // screening
   $('runscreen').onclick=runScreening;
+  document.querySelectorAll('#sc-mode button').forEach(b=>b.onclick=()=>{
+    document.querySelectorAll('#sc-mode button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on'); });
+  $('sc-run').onclick=scanNikkei;
   // settings
   $('set-proxy').value=state.cfg.proxy;
   $('set-customproxy').value=state.cfg.customproxy;
