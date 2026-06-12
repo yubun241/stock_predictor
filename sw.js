@@ -1,5 +1,5 @@
 /* StockSight SW - network-first (GT DASH方式) */
-const CACHE = 'stocksight-v7';
+const CACHE = 'stocksight-v9';
 const ASSETS = ['./', './index.html', './manifest.json'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
