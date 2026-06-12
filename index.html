@@ -331,12 +331,16 @@ h2.vt{font-size:17px;font-weight:900;margin:4px 2px 14px}
       <div class="chead"><b>上昇候補スキャン</b><span class="sub">(日経225)</span></div>
       <div class="frow"><span>条件モード</span>
         <div class="seg2" id="sc-mode">
-          <button data-v="rev" class="on">逆張り(反発候補)</button>
-          <button data-v="mom">順張り(勢い)</button></div></div>
+          <button data-v="sig" class="on">▲シグナル</button>
+          <button data-v="rev">逆張り</button>
+          <button data-v="mom">順張り</button></div></div>
       <div class="frow"><span>表示件数</span>
         <input type="number" id="sc-top" value="20" min="5" max="50"></div>
       <button class="btn" id="sc-run" style="margin-top:12px">日経225をスキャン (約30〜60秒)</button>
-      <div class="note">※「上がる株を当てる」ものではなく、テクニカル条件に合致する候補を抽出・順位付けするツールです(方向的中率は偶然水準と実測済)。最終判断は個別チャートでご確認ください。</div>
+      <div class="note">▲シグナル: 日足チャートの▲強気シグナルが最新バーで点灯中の銘柄のみ抽出
+(チャート表示と同一判定・2年データ使用のため通信量やや多め)。<br>
+※「上がる株を当てる」ものではなく条件合致候補の抽出です(方向的中率は偶然水準と実測済)。
+最終判断は個別チャートでご確認ください。</div>
       <div id="sc-out" style="margin-top:8px"></div>
     </div>
   </div>
@@ -1349,9 +1353,26 @@ async function scanNikkei(){
     while(queue.length){
       const code=queue.shift(), sym=code+'.T';
       try{
-        const ch=await yChart(sym,'1d','6mo');
+        const ch=await yChart(sym,'1d', mode==='sig'?'2y':'6mo');
         const c=ch.c, vol=ch.v, n=c.length;
         if(n<60) throw 0;
+        if(mode==='sig'){
+          // ホームチャートの▲と同一判定: 最新バー時点の翌足アンサンブル確率
+          const p=signalProb(c, 20);
+          if(p!=null && p>=0.5+SIG_STRONG){
+            const rv0=rsiArr(c)[n-1];
+            const bb0=bollinger(c,20);
+            const dev0=bb0?(c[n-1]-bb0.mid[bb0.mid.length-1])/Math.max(bb0.sd[bb0.sd.length-1],1e-9):0;
+            const chg0=n>1?(c[n-1]/c[n-2]-1)*100:0;
+            rows.push({sym,code,score:p*100,rsi:rv0,bbDev:dev0,
+                       volR:null,pUp:p,price:c[n-1],chg:chg0,sig:true});
+          }
+          done++;
+          if(done%5===0||done===total)
+            out.innerHTML='<div class="empty"><span class="spin"></span>スキャン中… '+done+'/'+total
+              +' (▲点灯 '+rows.length+'件)</div>';
+          continue;
+        }
         const r=logRet(c);
         const rv=rsiArr(c)[n-1];
         const bb=bollinger(c,20);
@@ -1382,13 +1403,21 @@ async function scanNikkei(){
   await Promise.all([worker(),worker(),worker(),worker(),worker(),worker()]);
   rows.sort((a,b)=>b.score-a.score);
   const top=rows.slice(0,topN);
+  const modeName= mode==='sig'?'▲シグナル点灯中':mode==='rev'?'逆張り(反発候補)':'順張り(勢い)';
+  const summary= mode==='sig'
+    ? modeName+' '+rows.length+'銘柄 / 走査'+(total-fail)+'銘柄'+(fail?' (取得失敗'+fail+')':'')
+    : modeName+' / 走査'+rows.length+'銘柄'+(fail?' (取得失敗'+fail+')':'');
+  if(mode==='sig'&&!rows.length){
+    out.innerHTML='<div class="sub" style="margin:4px 0 6px">'+summary+'</div>'
+      +'<div class="empty">現在▲シグナル点灯中の銘柄はありません</div>';
+    scBusy=false; return;
+  }
   out.innerHTML=
-    '<div class="sub" style="margin:4px 0 6px">'+(mode==='rev'?'逆張り(反発候補)':'順張り(勢い)')
-    +' / 走査'+rows.length+'銘柄'+(fail?' (取得失敗'+fail+')':'')+'</div>'
+    '<div class="sub" style="margin:4px 0 6px">'+summary+'</div>'
     + top.map((x,i)=>
     `<div class="lrow" data-s="${x.sym}"><div class="grow">
       <div class="nm3">${i+1}. ${x.code} <span class="sub mono">score ${x.score.toFixed(0)}</span></div>
-      <div class="cd">RSI ${x.rsi.toFixed(0)} / BB ${x.bbDev>=0?'+':''}${x.bbDev.toFixed(1)}σ / 出来高×${x.volR.toFixed(1)} / P↑${(x.pUp*100).toFixed(0)}%</div></div>
+      <div class="cd">${x.sig?'▲ P↑'+(x.pUp*100).toFixed(1)+'% / ':''}RSI ${x.rsi.toFixed(0)} / BB ${x.bbDev>=0?'+':''}${x.bbDev.toFixed(1)}σ${x.volR!=null?' / 出来高×'+x.volR.toFixed(1):''}${!x.sig?' / P↑'+(x.pUp*100).toFixed(0)+'%':''}</div></div>
       <div class="pr"><div class="p1 mono">${fmt(x.price)}</div>
       <div class="p2 mono ${x.chg>0?'up':x.chg<0?'dn':'neu'}">${(x.chg>=0?'+':'')+x.chg.toFixed(2)}%</div></div></div>`
     ).join('');
