@@ -238,6 +238,16 @@ h2.vt{font-size:17px;font-weight:900;margin:4px 2px 14px}
   animation:spFadeUp .6s .6s ease both}
 .sp-btn:active{transform:scale(.96)}
 #sc-mode button{padding:7px 7px;font-size:11px}
+.chip{border:1px solid var(--stroke);background:var(--card2);color:var(--sub);
+  border-radius:9px;padding:6px 12px;font-size:12px;cursor:pointer;font-family:inherit}
+.chip.on{background:#28304a;color:#fff;font-weight:700}
+.mini{cursor:pointer}
+#dtlchart{width:100%;display:block;border-radius:10px;touch-action:none}
+.indchip{border:1px solid var(--stroke);background:var(--card2);color:var(--sub);
+  border-radius:20px;padding:6px 13px;font-size:12px;cursor:pointer;font-family:inherit;
+  display:flex;align-items:center;gap:6px;transition:all .15s}
+.indchip.on{background:#28304a;color:#fff;border-color:transparent}
+.indchip i{width:9px;height:9px;border-radius:50%;display:inline-block}
 </style>
 </head>
 <body>
@@ -332,11 +342,11 @@ h2.vt{font-size:17px;font-weight:900;margin:4px 2px 14px}
     </div>
 
     <div class="minis">
-      <div class="mini"><div class="t">RSI (14)</div><div class="v mono" id="m-rsi">--</div>
+      <div class="mini" data-ind="rsi"><div class="t">RSI (14)</div><div class="v mono" id="m-rsi">--</div>
         <canvas id="c-rsi"></canvas><span class="badge b-neu" id="b-rsi">--</span></div>
-      <div class="mini"><div class="t">MACD</div><div class="v" id="m-macd">--</div>
+      <div class="mini" data-ind="macd"><div class="t">MACD</div><div class="v" id="m-macd">--</div>
         <canvas id="c-macd"></canvas><span class="badge b-neu" id="b-macd">--</span></div>
-      <div class="mini"><div class="t">BB位置</div><div class="v mono" id="m-bb">--</div>
+      <div class="mini" data-ind="bb"><div class="t">BB位置</div><div class="v mono" id="m-bb">--</div>
         <canvas id="c-bb"></canvas><span class="badge b-neu" id="b-bb">--</span></div>
     </div>
 
@@ -497,6 +507,35 @@ h2.vt{font-size:17px;font-weight:900;margin:4px 2px 14px}
   <div class="grab"></div><h3 id="info-title"></h3>
   <div id="info-body" style="font-size:13px;line-height:1.9;white-space:pre-wrap"
     class="mono"></div>
+</div></div>
+
+<!-- 詳細チャートモーダル (ローソク足+指標を時間軸同期で重ね表示) -->
+<div class="modal" id="dtlmodal"><div class="sheet" style="max-height:94vh">
+  <div class="grab"></div>
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+    <h3 style="margin:0;flex:1">詳細チャート <span class="sub" id="dtl-sym"></span></h3>
+  </div>
+  <div id="dtl-chips" style="display:flex;gap:6px;margin-bottom:8px">
+    <button class="chip on" data-p="rsi">RSI</button>
+    <button class="chip on" data-p="macd">MACD</button>
+    <button class="chip on" data-p="bb">BBσ</button>
+  </div>
+  <div class="sub mono" id="dtl-info" style="min-height:18px;margin-bottom:4px;font-size:11px">
+    チャートをなぞると十字線で各指標の値を確認できます</div>
+  <canvas id="dtlchart"></canvas>
+</div></div>
+
+
+<!-- 指標オーバーレイ拡大ビュー -->
+<div class="modal" id="indmodal"><div class="sheet" style="max-height:92vh">
+  <div class="grab"></div>
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+    <h3 id="ind-title" style="margin:0">指標オーバーレイ</h3>
+    <button class="link" id="ind-close" style="font-size:20px;padding:0 6px">×</button>
+  </div>
+  <div id="ind-chips" style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:12px"></div>
+  <canvas id="ind-canvas" style="width:100%;display:block;border-radius:10px"></canvas>
+  <div class="note" id="ind-note" style="margin-top:10px"></div>
 </div></div>
 
 <nav><div class="navin">
@@ -1210,6 +1249,356 @@ function drawSpark(id, arr, col, base){
   ctx.strokeStyle=col; ctx.lineWidth=1.4; ctx.stroke();
 }
 
+
+/* ---------- 詳細チャート (ローソク足+指標 時間軸同期) ---------- */
+const dtl={rsi:true, macd:true, bb:true, ci:-1};
+function openDetail(){
+  if(!state.data){ toast('まず銘柄を分析してください'); return; }
+  $('dtl-sym').textContent=state.symbol+' ('+TF[state.tf].label+')';
+  dtl.ci=-1;
+  $('dtlmodal').classList.add('open');
+  requestAnimationFrame(drawDetail);
+}
+function drawDetail(){
+  const cv=$('dtlchart'), d=state.data;
+  if(!d||!cv.clientWidth) return;
+  const cFull=d.cFull, n=d.c.length;
+  const W=cv.clientWidth, dpr=window.devicePixelRatio||1;
+  const H=Math.min(Math.round(W*1.35), Math.round(window.innerHeight*0.66));
+  cv.style.height=H+'px'; cv.width=W*dpr; cv.height=H*dpr;
+  const ctx=cv.getContext('2d'); ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,W,H);
+  const padL=40, padR=10, padB=18;
+  const plotW=W-padL-padR;
+  const X=i=>padL+(i+0.5)*plotW/n;
+  // パネル構成: 価格 + 有効な指標
+  const inds=[];
+  if(dtl.rsi) inds.push('rsi');
+  if(dtl.macd) inds.push('macd');
+  if(dtl.bb) inds.push('bb');
+  const priceH=(H-padB)*(inds.length?0.46:1.0);
+  const indH=inds.length?((H-padB)-priceH)/inds.length:0;
+  // 指標データ (全履歴で計算→表示分にスライスし、ローソクと同じiで揃う)
+  const rsiD=rsiArr(cFull).slice(-n);
+  const mdD=macdArr(cFull);
+  const mLine=mdD.line.slice(-n), mSig=mdD.sig.slice(-n), mHist=mdD.hist.slice(-n);
+  const bbF=bollinger(cFull, state.cfg.bbn);
+  let devD=new Array(n).fill(0);
+  if(bbF){ for(let i=0;i<n;i++){
+    const k=cFull.length-n+i-(state.cfg.bbn-1);
+    if(k>=0&&k<bbF.mid.length)
+      devD[i]=(cFull[cFull.length-n+i]-bbF.mid[k])/Math.max(bbF.sd[k],1e-9);
+  }}
+  /* --- 価格パネル --- */
+  let yMin=Math.min(...d.l), yMax=Math.max(...d.h);
+  const pad=(yMax-yMin)*0.06; yMin-=pad; yMax+=pad;
+  const Yp=v=>8+(priceH-16)*(1-(v-yMin)/(yMax-yMin));
+  ctx.font='9px Roboto Mono'; ctx.fillStyle='#5a6478';
+  ctx.strokeStyle='rgba(255,255,255,.05)';
+  for(let k=0;k<=3;k++){ const v=yMin+(yMax-yMin)*k/3, y=Yp(v);
+    ctx.beginPath(); ctx.moveTo(padL,y); ctx.lineTo(W-padR,y); ctx.stroke();
+    ctx.fillText(v>=1000?Math.round(v).toLocaleString():v.toFixed(1), 2, y+3); }
+  const cw=Math.max(2,Math.min(8,plotW/n*0.62));
+  for(let i=0;i<n;i++){
+    const col=d.c[i]>=d.o[i]?'#ef5350':'#42a5f5';
+    const x=X(i);
+    ctx.strokeStyle=col; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(x,Yp(d.h[i])); ctx.lineTo(x,Yp(d.l[i])); ctx.stroke();
+    const t=Yp(Math.max(d.o[i],d.c[i])), b=Yp(Math.min(d.o[i],d.c[i]));
+    ctx.fillStyle=col; ctx.fillRect(x-cw/2,t,cw,Math.max(b-t,1));
+  }
+  ctx.fillStyle='#8b95a7'; ctx.font='bold 9px Noto Sans JP';
+  ctx.fillText('価格', padL+4, 14);
+  /* --- 指標パネル --- */
+  let top=priceH;
+  const sep=y=>{ ctx.strokeStyle='rgba(255,255,255,.10)';
+    ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); };
+  for(const p of inds){
+    sep(top);
+    const h2=indH, innerT=top+6, innerH=h2-14;
+    if(p==='rsi'){
+      const Y2=v=>innerT+innerH*(1-v/100);
+      const hl=(v,col)=>{ ctx.setLineDash([2,2]); ctx.strokeStyle=col;
+        ctx.beginPath(); ctx.moveTo(padL,Y2(v)); ctx.lineTo(W-padR,Y2(v));
+        ctx.stroke(); ctx.setLineDash([]);
+        ctx.fillStyle='#5a6478'; ctx.font='8px Roboto Mono';
+        ctx.fillText(String(v), 2, Y2(v)+3); };
+      hl(80,'rgba(239,68,68,.5)'); hl(50,'rgba(255,255,255,.12)'); hl(20,'rgba(59,130,246,.5)');
+      ctx.beginPath();
+      rsiD.forEach((v,i)=>{ const x=X(i); i?ctx.lineTo(x,Y2(v)):ctx.moveTo(x,Y2(v)); });
+      ctx.strokeStyle='#22d3ee'; ctx.lineWidth=1.4; ctx.stroke();
+      ctx.fillStyle='#8b95a7'; ctx.font='bold 9px Noto Sans JP';
+      ctx.fillText('RSI('+14+')', padL+4, top+13);
+    }
+    if(p==='macd'){
+      const all=mLine.concat(mSig), mn=Math.min(...all), mx=Math.max(...all),
+            rg=Math.max(mx-mn,1e-9);
+      const Y2=v=>innerT+innerH*(1-(v-mn)/rg);
+      if(mn<0&&mx>0){ ctx.setLineDash([2,2]); ctx.strokeStyle='rgba(255,255,255,.14)';
+        ctx.beginPath(); ctx.moveTo(padL,Y2(0)); ctx.lineTo(W-padR,Y2(0));
+        ctx.stroke(); ctx.setLineDash([]); }
+      // ヒストグラム
+      for(let i=0;i<n;i++){ const x=X(i);
+        ctx.fillStyle=mHist[i]>=0?'rgba(34,197,94,.45)':'rgba(239,68,68,.45)';
+        const y0=Y2(0), y1=Y2(mHist[i]);
+        ctx.fillRect(x-cw/3, Math.min(y0,y1), cw*2/3, Math.max(Math.abs(y1-y0),1)); }
+      const line2=(a,col)=>{ ctx.beginPath();
+        a.forEach((v,i)=>{ const x=X(i); i?ctx.lineTo(x,Y2(v)):ctx.moveTo(x,Y2(v)); });
+        ctx.strokeStyle=col; ctx.lineWidth=1.4; ctx.stroke(); };
+      line2(mSig,'#a78bfa'); line2(mLine,'#ffd54f');
+      // クロス点
+      for(let i=1;i<n;i++){
+        if((mLine[i]-mSig[i])*(mLine[i-1]-mSig[i-1])<=0){
+          const x=X(i), y=Y2((mLine[i]+mSig[i])/2);
+          ctx.beginPath(); ctx.arc(x,y,2.6,0,7);
+          ctx.fillStyle=mLine[i]>=mSig[i]?'#22c55e':'#ef4444'; ctx.fill(); }
+      }
+      ctx.fillStyle='#8b95a7'; ctx.font='bold 9px Noto Sans JP';
+      ctx.fillText('MACD', padL+4, top+13);
+    }
+    if(p==='bb'){
+      const mn=Math.min(-3,...devD), mx=Math.max(3,...devD), rg=mx-mn;
+      const Y2=v=>innerT+innerH*(1-(v-mn)/rg);
+      const hl=(v,col)=>{ ctx.setLineDash([2,2]); ctx.strokeStyle=col;
+        ctx.beginPath(); ctx.moveTo(padL,Y2(v)); ctx.lineTo(W-padR,Y2(v));
+        ctx.stroke(); ctx.setLineDash([]);
+        ctx.fillStyle='#5a6478'; ctx.font='8px Roboto Mono';
+        ctx.fillText((v>0?'+':'')+v+'σ', 2, Y2(v)+3); };
+      hl(2,'rgba(245,158,11,.5)'); hl(0,'rgba(255,255,255,.12)'); hl(-2,'rgba(245,158,11,.5)');
+      ctx.beginPath();
+      devD.forEach((v,i)=>{ const x=X(i); i?ctx.lineTo(x,Y2(v)):ctx.moveTo(x,Y2(v)); });
+      ctx.strokeStyle='#a78bfa'; ctx.lineWidth=1.4; ctx.stroke();
+      ctx.fillStyle='#8b95a7'; ctx.font='bold 9px Noto Sans JP';
+      ctx.fillText('BB位置(σ)', padL+4, top+13);
+    }
+    top+=indH;
+  }
+  /* --- 横軸 --- */
+  ctx.fillStyle='#8b95a7'; ctx.font='9px Roboto Mono';
+  const isIntra=(state.tf==='1m'||state.tf==='5m');
+  const stepT=Math.max(1,Math.ceil(n/5));
+  for(let i=0;i<n;i+=stepT){
+    const dt=new Date((d.ts[i]+32400)*1000);
+    const lab= isIntra ?
+      String(dt.getUTCHours()).padStart(2,'0')+':'+String(dt.getUTCMinutes()).padStart(2,'0')
+      : (dt.getUTCMonth()+1)+'/'+dt.getUTCDate();
+    ctx.fillText(lab, X(i)-12, H-5);
+  }
+  /* --- 十字線 (全パネル貫通) --- */
+  if(dtl.ci>=0&&dtl.ci<n){
+    const x=X(dtl.ci);
+    ctx.strokeStyle='rgba(232,237,245,.55)'; ctx.setLineDash([3,3]);
+    ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H-padB); ctx.stroke();
+    ctx.setLineDash([]);
+    const i=dtl.ci, dt=new Date((d.ts[i]+32400)*1000);
+    const dl= isIntra ?
+      (dt.getUTCMonth()+1)+'/'+dt.getUTCDate()+' '+
+      String(dt.getUTCHours()).padStart(2,'0')+':'+String(dt.getUTCMinutes()).padStart(2,'0')
+      : (dt.getUTCMonth()+1)+'/'+dt.getUTCDate();
+    $('dtl-info').textContent=
+      dl+'  終値'+fmt(d.c[i])+'  RSI '+rsiD[i].toFixed(0)
+      +'  MACD '+(mLine[i]>=mSig[i]?'GX':'DX')
+      +'  BB '+(devD[i]>=0?'+':'')+devD[i].toFixed(1)+'σ';
+  }
+}
+function dtlPointer(e){
+  const cv=$('dtlchart'), d=state.data; if(!d) return;
+  const rect=cv.getBoundingClientRect();
+  const x=(e.touches?e.touches[0].clientX:e.clientX)-rect.left;
+  const n=d.c.length, padL=40, plotW=rect.width-40-10;
+  let i=Math.floor((x-padL)/plotW*n);
+  i=Math.max(0,Math.min(n-1,i));
+  if(i!==dtl.ci){ dtl.ci=i; drawDetail(); }
+  if(e.cancelable) e.preventDefault();
+}
+
+
+/* ---------- 指標オーバーレイ拡大ビュー ---------- */
+const IND_DEFS = {
+  candle:{label:'ローソク足', color:'#e8edf5', always:true},
+  bb:    {label:'ボリンジャー', color:'#22c55e'},
+  sma:   {label:'SMA', color:'#ffd54f'},
+  rsi:   {label:'RSI', color:'#22d3ee', pane:true},
+  macd:  {label:'MACD', color:'#ffd54f', pane:true},
+};
+const indState = { sel:{candle:true, rsi:true}, openedBy:null };
+
+function openIndOverlay(primary){
+  if(!state.data){ toast('まず銘柄を分析してください'); return; }
+  // タップした指標をデフォルトON + ローソク足は常時
+  indState.sel = {candle:true};
+  if(primary==='rsi') indState.sel.rsi=true;
+  else if(primary==='macd') indState.sel.macd=true;
+  else if(primary==='bb') indState.sel.bb=true;
+  indState.openedBy=primary;
+  buildIndChips();
+  $('indmodal').classList.add('open');
+  requestAnimationFrame(drawIndOverlay);
+}
+function buildIndChips(){
+  const order=['candle','bb','sma','rsi','macd'];
+  $('ind-chips').innerHTML = order.map(k=>{
+    const d=IND_DEFS[k], on=indState.sel[k]?'on':'';
+    return `<button class="indchip ${on}" data-k="${k}">
+      <i style="background:${d.color}"></i>${d.label}</button>`;
+  }).join('');
+  $('ind-chips').querySelectorAll('.indchip').forEach(b=>b.onclick=()=>{
+    const k=b.dataset.k;
+    indState.sel[k]=!indState.sel[k];
+    b.classList.toggle('on', indState.sel[k]);
+    drawIndOverlay();
+  });
+}
+function drawIndOverlay(){
+  const cv=$('ind-canvas'), d=state.data;
+  if(!cv||!d) return;
+  const sel=indState.sel;
+  const c=d.c, o=d.o, h=d.h, l=d.l, ts=d.ts, n=c.length;
+  const cFull=d.cFull;
+  // 表示区間の全系列を算出 (cFullから末尾n本に揃える)
+  const tail=a=>a.slice(-n);
+  const rsiFull=tail(rsiArr(cFull));
+  const md=macdArr(cFull); const macdL=tail(md.line), macdS=tail(md.sig), macdH=tail(md.hist);
+  const bbFull=bollinger(cFull, state.cfg.bbn);
+  // ペイン構成: 価格(常時) + 選択されたpane系
+  const panes=[{type:'price'}];
+  if(sel.rsi) panes.push({type:'rsi'});
+  if(sel.macd) panes.push({type:'macd'});
+
+  const W=cv.clientWidth||cv.parentElement.clientWidth-32;
+  const dpr=window.devicePixelRatio||1;
+  const priceH=260, subH=110, gap=10, padT=8, padB=24;
+  const H=padT+priceH+(panes.length-1)*(subH+gap)+padB;
+  cv.style.height=H+'px'; cv.width=W*dpr; cv.height=H*dpr;
+  const ctx=cv.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,W,H);
+  const padL=46, padR=14;
+  const plotW=W-padL-padR;
+  const X=i=>padL+(i+0.5)*plotW/n;
+
+  // 各ペインのY起点
+  let yTop=padT;
+  const paneRect={};
+  panes.forEach((p,idx)=>{ const hh= idx===0?priceH:subH;
+    paneRect[p.type]={top:yTop, h:hh}; yTop+=hh+gap; });
+
+  // 縦グリッド (日付) 全ペイン共通
+  ctx.font='9px Roboto Mono';
+  const tf=TF[state.tf], isIntra=(state.tf==='1m'||state.tf==='5m');
+  const stepT=Math.max(1,Math.ceil(n/5));
+  ctx.strokeStyle='rgba(255,255,255,.04)';
+  for(let i=0;i<n;i+=stepT){
+    ctx.beginPath(); ctx.moveTo(X(i),padT); ctx.lineTo(X(i),H-padB); ctx.stroke();
+  }
+
+  // ===== 価格ペイン =====
+  const pr=paneRect.price;
+  let yMin=Math.min(...l), yMax=Math.max(...h);
+  if(sel.bb && bbFull){ const kn=tail(bbFull.mid).map((m,i)=>m);
+    const up=tail(bbFull.mid).map((m,i)=>m+2*tail(bbFull.sd)[i]);
+    const lo=tail(bbFull.mid).map((m,i)=>m-2*tail(bbFull.sd)[i]);
+    yMin=Math.min(yMin,...lo); yMax=Math.max(yMax,...up); }
+  const pad=(yMax-yMin)*0.05; yMin-=pad; yMax+=pad;
+  const Yp=v=>pr.top+pr.h*(1-(v-yMin)/(yMax-yMin));
+  // グリッド横+ラベル
+  ctx.fillStyle='#5a6478'; ctx.strokeStyle='rgba(255,255,255,.05)';
+  for(let k=0;k<=4;k++){ const v=yMin+(yMax-yMin)*k/4, y=Yp(v);
+    ctx.beginPath(); ctx.moveTo(padL,y); ctx.lineTo(W-padR,y); ctx.stroke();
+    ctx.fillText(Math.round(v).toLocaleString(), 2, y+3); }
+  // BB
+  if(sel.bb && bbFull){
+    const mid=tail(bbFull.mid), sd=tail(bbFull.sd);
+    [[2,'#f59e0b'],[1,'#22c55e']].forEach(([k,col])=>{
+      ctx.strokeStyle=col; ctx.globalAlpha=.7; ctx.lineWidth=1;
+      [1,-1].forEach(sgn=>{ ctx.beginPath();
+        mid.forEach((m,i)=>{ const x=X(i), y=Yp(m+sgn*k*sd[i]);
+          i?ctx.lineTo(x,y):ctx.moveTo(x,y); }); ctx.stroke(); });
+      ctx.globalAlpha=1;
+    });
+    ctx.setLineDash([2,3]); ctx.strokeStyle='#cbd5e1'; ctx.beginPath();
+    mid.forEach((m,i)=>{ const x=X(i); i?ctx.lineTo(x,Yp(m)):ctx.moveTo(x,Yp(m)); });
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+  // SMA
+  if(sel.sma){
+    [[state.cfg.sma1,'#ffd54f'],[state.cfg.sma2,'#a78bfa']].forEach(([p2,col])=>{
+      const s=smaArr(cFull,p2); if(!s)return; const sv=s.v.slice(-n), sShift=n-sv.length;
+      ctx.strokeStyle=col; ctx.lineWidth=1.2; ctx.beginPath();
+      sv.forEach((v,i)=>{ const x=X(i+sShift), y=Yp(v); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+      ctx.stroke();
+    });
+  }
+  // ローソク足
+  if(sel.candle){
+    const cw=Math.max(2,Math.min(10,plotW/n*0.62));
+    for(let i=0;i<n;i++){ const col=c[i]>=o[i]?'#ef5350':'#42a5f5';
+      const x=X(i); ctx.strokeStyle=col; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(x,Yp(h[i])); ctx.lineTo(x,Yp(l[i])); ctx.stroke();
+      const top=Yp(Math.max(o[i],c[i])), bot=Yp(Math.min(o[i],c[i]));
+      ctx.fillStyle=col; ctx.fillRect(x-cw/2, top, cw, Math.max(bot-top,1)); }
+  }
+  ctx.fillStyle='#8b95a7'; ctx.font='10px Roboto Mono';
+  ctx.fillText('価格', padL+4, pr.top+13);
+
+  // ===== RSIペイン =====
+  if(sel.rsi && paneRect.rsi){
+    const rp=paneRect.rsi;
+    const Yr=v=>rp.top+rp.h*(1-v/100);
+    ctx.strokeStyle='rgba(255,255,255,.06)';
+    ctx.strokeRect(padL,rp.top,plotW,rp.h);
+    [[80,'rgba(239,68,68,.5)'],[50,'rgba(255,255,255,.14)'],[20,'rgba(59,130,246,.5)']]
+      .forEach(([v,col])=>{ ctx.setLineDash([3,3]); ctx.strokeStyle=col;
+        ctx.beginPath(); ctx.moveTo(padL,Yr(v)); ctx.lineTo(W-padR,Yr(v)); ctx.stroke();
+        ctx.setLineDash([]); ctx.fillStyle=col; ctx.fillText(String(v), 2, Yr(v)+3); });
+    ctx.strokeStyle='#22d3ee'; ctx.lineWidth=1.4; ctx.beginPath();
+    rsiFull.forEach((v,i)=>{ const x=X(i),y=Yr(v); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+    ctx.stroke();
+    ctx.fillStyle='#22d3ee'; ctx.font='10px Roboto Mono';
+    ctx.fillText('RSI(14)', padL+4, rp.top+13);
+  }
+  // ===== MACDペイン =====
+  if(sel.macd && paneRect.macd){
+    const mp=paneRect.macd;
+    const all=macdL.concat(macdS,macdH), mn=Math.min(...all), mx=Math.max(...all), rg=Math.max(mx-mn,1e-9);
+    const Ym=v=>mp.top+mp.h*(1-(v-mn)/rg);
+    ctx.strokeStyle='rgba(255,255,255,.06)'; ctx.strokeRect(padL,mp.top,plotW,mp.h);
+    if(mn<0&&mx>0){ ctx.setLineDash([3,3]); ctx.strokeStyle='rgba(255,255,255,.14)';
+      ctx.beginPath(); ctx.moveTo(padL,Ym(0)); ctx.lineTo(W-padR,Ym(0)); ctx.stroke(); ctx.setLineDash([]); }
+    // ヒストグラム
+    const bw=Math.max(1,plotW/n*0.5);
+    macdH.forEach((v,i)=>{ ctx.fillStyle= v>=0?'rgba(34,197,94,.5)':'rgba(239,68,68,.5)';
+      const y0=Ym(0), y1=Ym(v); ctx.fillRect(X(i)-bw/2, Math.min(y0,y1), bw, Math.abs(y1-y0)); });
+    // MACD線/シグナル線
+    const drawL=(a,col)=>{ ctx.strokeStyle=col; ctx.lineWidth=1.3; ctx.beginPath();
+      a.forEach((v,i)=>{ const x=X(i),y=Ym(v); i?ctx.lineTo(x,y):ctx.moveTo(x,y); }); ctx.stroke(); };
+    drawL(macdS,'#a78bfa'); drawL(macdL,'#ffd54f');
+    // クロス点マーカー
+    for(let i=1;i<macdL.length;i++){
+      if((macdL[i]-macdS[i])*(macdL[i-1]-macdS[i-1])<=0){
+        const x=X(i), y=Ym((macdL[i]+macdS[i])/2);
+        ctx.beginPath(); ctx.arc(x,y,3,0,7);
+        ctx.fillStyle= macdL[i]>=macdS[i]?'#22c55e':'#ef4444'; ctx.fill();
+        ctx.strokeStyle='#0a0e16'; ctx.lineWidth=1; ctx.stroke();
+      }
+    }
+    ctx.fillStyle='#ffd54f'; ctx.font='10px Roboto Mono';
+    ctx.fillText('MACD', padL+4, mp.top+13);
+  }
+
+  // X軸ラベル (最下ペイン下)
+  ctx.fillStyle='#8b95a7'; ctx.font='9px Roboto Mono';
+  for(let i=0;i<n;i+=stepT){
+    const dt=new Date((ts[i]+32400)*1000);
+    const lab= isIntra ?
+      String(dt.getUTCHours()).padStart(2,'0')+':'+String(dt.getUTCMinutes()).padStart(2,'0')
+      : (dt.getUTCMonth()+1)+'/'+dt.getUTCDate();
+    ctx.fillText(lab, X(i)-12, H-7);
+  }
+  // 凡例ノート
+  $('ind-note').textContent='チップで指標をON/OFF。全ペインは時間軸を共有し、'
+    +'ローソク足のタイミングと指標の動きを縦位置で照合できます'
+    +'（GX/DX・RSI反転・BBバンドタッチ等）。';
+}
+
 /* ---------- メイン解析フロー ---------- */
 async function analyze(code, silent){
   const symbol=normSym(code||state.symbol);
@@ -1691,6 +2080,17 @@ function init(){
     c.sig=$('cfg-sig').value; c.pat=$('cfg-pat').value;
     saveCfg(); $('cfgmodal').classList.remove('open');
     if(state.symbol) analyze(state.symbol); };
+  // 詳細チャート: ミニカードタップで起動
+  document.querySelectorAll('.mini').forEach(m=>m.onclick=openDetail);
+  document.querySelectorAll('#dtl-chips .chip').forEach(b=>b.onclick=()=>{
+    b.classList.toggle('on');
+    dtl[b.dataset.p]=b.classList.contains('on');
+    drawDetail(); });
+  const dc=$('dtlchart');
+  dc.addEventListener('pointerdown',dtlPointer);
+  dc.addEventListener('pointermove',e=>{ if(e.buttons||e.pointerType==='touch') dtlPointer(e); });
+  dc.addEventListener('touchstart',dtlPointer,{passive:false});
+  dc.addEventListener('touchmove',dtlPointer,{passive:false});
   // modals close on backdrop
   document.querySelectorAll('.modal').forEach(m=>m.addEventListener('click',e=>{
     if(e.target===m) m.classList.remove('open'); }));
@@ -1698,6 +2098,11 @@ function init(){
     $('info-body').textContent=body||'まず銘柄を分析してください';
     $('infomodal').classList.add('open'); };
   $('detailbtn').onclick=()=>showInfo('予測詳細', state.lastReport);
+  // ミニカード→拡大オーバーレイ
+  document.querySelectorAll('.mini[data-ind]').forEach(m=>m.onclick=()=>openIndOverlay(m.dataset.ind));
+  $('ind-close').onclick=()=>$('indmodal').classList.remove('open');
+  let irz; window.addEventListener('resize',()=>{ clearTimeout(irz);
+    irz=setTimeout(()=>{ if($('indmodal').classList.contains('open')) drawIndOverlay(); },200); });
   $('modeldetail').onclick=()=>showInfo('モデル詳細', state.lastModelReport);
   $('sigall').onclick=()=>{
     const d=state.data;
