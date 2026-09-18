@@ -623,11 +623,13 @@ function proxies(){
 async function getJSON(url){
   let lastErr;
   for (const wrap of proxies()){
+    const ctl = new AbortController(), tm = setTimeout(()=>ctl.abort(), 15000);
     try{
-      const r = await fetch(wrap(url), {cache:'no-store'});
+      const r = await fetch(wrap(url), {cache:'no-store', signal:ctl.signal});
       if (!r.ok) throw new Error('HTTP '+r.status);
       return await r.json();
-    }catch(e){ lastErr=e; }
+    }catch(e){ lastErr = e.name==='AbortError' ? new Error('タイムアウト') : e; }
+    finally{ clearTimeout(tm); }
   }
   throw lastErr || new Error('取得失敗');
 }
@@ -1801,7 +1803,12 @@ function drawIndOverlay(){
 async function analyze(code, silent){
   const symbol=normSym(code||state.symbol);
   if(!symbol){ toast('銘柄コードを入力してください'); return; }
-  if(state.busy) return; state.busy=true;
+  if(state.busy){
+    // 明示操作(スキャン結果タップ・タブ切替・検索)は捨てずに予約し、完了後に実行
+    if(!silent){ state.pending=symbol; toast('解析中のため、完了後に '+symbol.replace('.T','')+' を表示します'); }
+    return;
+  }
+  state.busy=true;
   if(!silent){ $('chartmsg').innerHTML='<span class="spin"></span>取得・解析中… (6モデル)';
     $('chartmsg').style.display='block'; $('chart').style.display='none'; }
   try{
@@ -1832,6 +1839,7 @@ async function analyze(code, silent){
     $('chartmsg').style.display='block'; $('chart').style.display='none';
   }
   state.busy=false;
+  if(state.pending){ const p=state.pending; state.pending=null; analyze(p); }
 }
 
 function renderAll(quote){
@@ -2055,8 +2063,8 @@ async function runScreening(){
       <div class="pr"><div class="p1 mono">${fmt(r.price)}</div>
       <div class="p2 mono ${r.chg>0?'up':r.chg<0?'dn':'neu'}">${r.chg!=null?(r.chg>=0?'+':'')+r.chg.toFixed(2)+'%':''}</div></div></div>`
   ).join('');
-  document.querySelectorAll('#screenout .lrow[data-s]').forEach(rw=>rw.onclick=()=>{
-    switchView('home'); analyze(rw.dataset.s); });
+  document.querySelectorAll('#screenout .lrow[data-s]').forEach(rw=>rw.onclick=()=>
+    openFromScan(rw.dataset.s));
 }
 
 
@@ -2081,6 +2089,15 @@ const NIKKEI225 = [
 '9503','9531','9532','9602','9613','9684','9735','9766','9843','9983','9984'
 ];
 let scBusy=false;
+/* スキャン/一括分析の結果は日足データで判定しているため、日足チャートで開く */
+function openFromScan(sym){
+  if(state.tf!=='1d'){
+    state.tf='1d'; LS.set('ss_tf','1d'); buildTabs();
+    toast('スキャン結果は日足基準のため、日足で表示します');
+  }
+  $('symin').value=sym.replace('.T','');
+  switchView('home'); analyze(sym);
+}
 async function scanNikkei(){
   if(scBusy) return; scBusy=true;
   const mode=document.querySelector('#sc-mode button.on').dataset.v;
@@ -2098,10 +2115,10 @@ async function scanNikkei(){
         if(n<60) throw 0;
         if(mode==='sig'){
           // ホームチャートの▲と同一判定: 最新バー時点の翌足アンサンブル確率
-          const p=signalProb(c, 20);
+          const p=signalProb(c, state.cfg.bbn);
           if(p!=null && p>=0.5+SIG_STRONG){
             const rv0=rsiArr(c)[n-1];
-            const bb0=bollinger(c,20);
+            const bb0=bollinger(c,state.cfg.bbn);
             const dev0=bb0?(c[n-1]-bb0.mid[bb0.mid.length-1])/Math.max(bb0.sd[bb0.sd.length-1],1e-9):0;
             const chg0=n>1?(c[n-1]/c[n-2]-1)*100:0;
             rows.push({sym,code,score:p*100,price:c[n-1],chg:chg0,
@@ -2219,8 +2236,8 @@ async function scanNikkei(){
       <div class="pr"><div class="p1 mono">${fmt(x.price)}</div>
       <div class="p2 mono ${x.chg>0?'up':x.chg<0?'dn':'neu'}">${(x.chg>=0?'+':'')+x.chg.toFixed(2)}%</div></div></div>`
     ).join('');
-  out.querySelectorAll('.lrow[data-s]').forEach(rw=>rw.onclick=()=>{
-    switchView('home'); analyze(rw.dataset.s); });
+  out.querySelectorAll('.lrow[data-s]').forEach(rw=>rw.onclick=()=>
+    openFromScan(rw.dataset.s));
   scBusy=false;
 }
 
